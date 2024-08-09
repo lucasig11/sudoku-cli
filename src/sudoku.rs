@@ -6,8 +6,8 @@ use std::time::{Duration, Instant};
 const SIZE: usize = 9;
 const SUBGRID_SIZE: usize = 3;
 
-pub const MAX_CHECKS: usize = 3;
-pub const MAX_HINTS: usize = 3;
+pub const MAX_CHECKS: u8 = 3;
+pub const MAX_HINTS: u8 = 3;
 
 #[derive(Default)]
 pub struct Sudoku {
@@ -18,8 +18,8 @@ pub struct Sudoku {
     start: Option<Instant>,
     elapsed: Duration,
     difficulty: Difficulty,
-    checks: usize,
-    hints: usize,
+    checks: u8,
+    hints: u8,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -28,8 +28,8 @@ struct Save {
     solution: [[Cell; SIZE]; SIZE],
     difficulty: Difficulty,
     elapsed: u64,
-    checks: usize,
-    hints: usize,
+    checks: u8,
+    hints: u8,
 }
 
 struct Move {
@@ -46,22 +46,46 @@ pub struct Board {
 #[derive(Serialize, Deserialize, Copy, Clone, Default)]
 pub struct Cell {
     pub value: u8,
-    pub locked: bool,
-    pub checked: Option<bool>,
+    flags: u8,
 }
+
+const CELL_CHECKED: u8 = 0b0001;
+const CELL_CORRECT: u8 = 0b0010;
+const CELL_WRITABLE: u8 = 0b0100;
 
 impl Cell {
     pub fn new(value: u8) -> Self {
-        Self {
-            value,
-            locked: value != 0,
-            ..Default::default()
+        let flags = if value == 0 { CELL_WRITABLE } else { 0 };
+        Self { value, flags }
+    }
+
+    pub fn uncheck(&mut self) {
+        self.flags &= !CELL_CHECKED;
+        self.flags &= !CELL_CORRECT;
+    }
+
+    pub fn check(&mut self, correct: bool) {
+        self.flags |= CELL_CHECKED;
+        if correct {
+            self.flags |= CELL_CORRECT;
         }
+    }
+
+    pub fn writable(&self) -> bool {
+        self.flags & CELL_WRITABLE != 0
+    }
+
+    pub fn checked(&self) -> bool {
+        self.flags & CELL_CHECKED != 0
+    }
+
+    pub fn correct(&self) -> bool {
+        self.checked() && self.flags & CELL_CORRECT != 0
     }
 }
 
 #[derive(Clone, Copy, Default)]
-enum GameState {
+pub enum GameState {
     #[default]
     Running,
     Paused,
@@ -147,12 +171,16 @@ impl Sudoku {
         self.difficulty
     }
 
-    pub fn hints(&self) -> usize {
+    pub fn hints(&self) -> u8 {
         self.hints
     }
 
-    pub fn checks(&self) -> usize {
+    pub fn checks(&self) -> u8 {
         self.checks
+    }
+
+    pub fn state(&self) -> GameState {
+        self.state
     }
 
     pub fn is_paused(&self) -> bool {
@@ -175,8 +203,8 @@ impl Sudoku {
         self.grid[y][x]
     }
 
-    pub fn is_locked(&self, x: usize, y: usize) -> bool {
-        self.at(x, y).locked
+    pub fn writable(&self, x: usize, y: usize) -> bool {
+        self.at(x, y).flags & CELL_WRITABLE != 0
     }
 
     fn can_check(&self) -> bool {
@@ -199,10 +227,12 @@ impl Sudoku {
         self.solve();
         for y in 0..SIZE {
             for x in 0..SIZE {
-                if !self.grid[y][x].locked {
-                    let is_correct = self.grid[y][x].value == self.solution[y][x].value;
-                    self.grid[y][x].value = self.solution[y][x].value;
-                    self.grid[y][x].checked = Some(is_correct);
+                if self.writable(x, y) {
+                    let cell = &mut self.grid[y][x];
+                    let solution = self.solution[y][x].value;
+                    let is_correct = cell.value == 0 || cell.value == solution;
+                    self.grid[y][x].value = solution;
+                    self.grid[y][x].check(is_correct);
                 }
             }
         }
@@ -217,11 +247,11 @@ impl Sudoku {
         for i in 0..SIZE {
             for j in 0..SIZE {
                 let cell = &mut self.grid[i][j];
-                if cell.locked || cell.value == 0 || cell.checked.unwrap_or(false) {
+                if !cell.writable() || cell.value == 0 || cell.checked() {
                     continue;
                 }
 
-                cell.checked = Some(cell.value == self.solution[i][j].value);
+                cell.check(cell.value == self.solution[i][j].value);
                 checked = true;
             }
         }
@@ -244,12 +274,12 @@ impl Sudoku {
 
         for (y, x) in positions {
             let cell = &mut self.grid[y][x];
-            if cell.locked || cell.value != 0 {
+            if !cell.writable() || cell.value != 0 {
                 continue;
             }
 
             cell.value = self.solution[y][x].value;
-            cell.checked = Some(true);
+            cell.check(true);
             self.hints += 1;
             break;
         }
@@ -286,12 +316,12 @@ impl Sudoku {
     }
 
     pub fn update_cell(&mut self, x: usize, y: usize, value: u8) {
-        if !self.is_running() || self.is_locked(x, y) {
+        if !self.is_running() || !self.writable(x, y) {
             return;
         }
         let old = std::mem::replace(&mut self.grid[y][x].value, value);
         self.movements.push(Move { x, y, old });
-        self.grid[y][x].checked = None;
+        self.grid[y][x].uncheck();
 
         if self.is_solved() {
             self.elapsed = self.elapsed();
@@ -305,7 +335,7 @@ impl Sudoku {
         }
         for row in self.grid.iter_mut() {
             for cell in row.iter_mut() {
-                if !cell.locked {
+                if cell.writable() {
                     cell.value = 0;
                 }
             }

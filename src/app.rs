@@ -6,8 +6,9 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap},
     Terminal,
 };
+use style::palette::tailwind::{AMBER, EMERALD};
 
-use crate::sudoku::{Cell, Difficulty, Sudoku, MAX_CHECKS, MAX_HINTS};
+use crate::sudoku::{Cell, Difficulty, GameState, Sudoku, MAX_CHECKS, MAX_HINTS};
 
 const SAVE_FILE: &str = "sudoku.save";
 
@@ -41,7 +42,7 @@ enum Action {
     ClearCell,
     Undo,
     ClearBoard,
-    NewGame(Option<Difficulty>),
+    NewGame(Difficulty),
     SaveGame,
     LoadGame,
     Pause,
@@ -87,10 +88,18 @@ impl Widget for &GameWidget {
             self.controls().render(controls, buf);
         }
 
-        if self.game.is_paused() {
-            let area = centered_rect(90, 30, game);
-            Clear.render(area, buf);
-            self.pause_popup().render(area, buf);
+        match self.game.state() {
+            GameState::Paused => {
+                let area = centered_rect(90, 30, game);
+                Clear.render(area, buf);
+                self.pause_popup().render(area, buf);
+            }
+            GameState::Won => {
+                let area = centered_rect(90, 30, game);
+                Clear.render(area, buf);
+                self.won_popup().render(area, buf);
+            }
+            _ => {}
         }
     }
 }
@@ -118,17 +127,17 @@ impl Widget for &App {
 impl App {
     pub fn new() -> Self {
         let options = vec![
-            ("New Game", Action::NewGame(None)),
+            ("New Game", Action::NewGame(Difficulty::default())),
             ("Load Game", Action::LoadGame),
             ("Quit", Action::Quit),
         ];
         let main_menu = MenuWidget::new(options);
 
         let options = vec![
-            ("Easy", Action::NewGame(Some(Difficulty::Easy))),
-            ("Medium", Action::NewGame(Some(Difficulty::Medium))),
-            ("Hard", Action::NewGame(Some(Difficulty::Hard))),
-            ("Expert", Action::NewGame(Some(Difficulty::Expert))),
+            ("Easy", Action::NewGame(Difficulty::Easy)),
+            ("Medium", Action::NewGame(Difficulty::Medium)),
+            ("Hard", Action::NewGame(Difficulty::Hard)),
+            ("Expert", Action::NewGame(Difficulty::Expert)),
             ("< Back", Action::Quit),
         ];
         let new_game_menu = MenuWidget::new(options);
@@ -142,7 +151,7 @@ impl App {
 
     pub fn run(&mut self, mut term: Terminal<impl Backend>) -> Result<()> {
         while self.is_running() {
-            self.draw_current_screen(&mut term)?;
+            self.draw(&mut term)?;
             let mut current_message = self.handle_events()?;
 
             while let Some(message) = current_message {
@@ -156,12 +165,8 @@ impl App {
         !self.quit
     }
 
-    fn draw_current_screen(&self, term: &mut Terminal<impl Backend>) -> Result<()> {
-        term.draw(|f| match self.current_screen {
-            Screen::MainMenu => f.render_widget(&self.main_menu, f.size()),
-            Screen::NewGameMenu => f.render_widget(&self.new_game_menu, f.size()),
-            Screen::Game => f.render_widget(&self.game, f.size()),
-        })?;
+    fn draw(&self, term: &mut Terminal<impl Backend>) -> Result<()> {
+        term.draw(|f| f.render_widget(self, f.size()))?;
         Ok(())
     }
 
@@ -189,9 +194,9 @@ impl App {
                 None
             }
             Screen::NewGameMenu => {
-                if let Action::NewGame(d) = message {
+                if let Action::NewGame(difficulty) = message {
                     self.current_screen = Screen::Game;
-                    self.game.new_game(d.unwrap_or_default());
+                    self.game.new_game(difficulty);
                 }
                 None
             }
@@ -290,16 +295,16 @@ impl GameWidget {
             KeyCode::Char('?') => Action::ToggleControls,
             /* Shift modifier */
             KeyCode::Char('C') => Action::Solve,
-            KeyCode::Char('N') => Action::NewGame(Some(self.game.difficulty())),
-            KeyCode::Char('B') => Action::ClearBoard,
+            KeyCode::Char('N') => Action::NewGame(self.game.difficulty()),
+            KeyCode::Char('X') => Action::ClearBoard,
             KeyCode::Char('S') => Action::SaveGame,
             KeyCode::Char('Q') | KeyCode::Esc => Action::Quit,
             /* */
-            KeyCode::Char('p') => Action::TogglePause,
             KeyCode::Char('c') => Action::Check,
+            KeyCode::Char('x') => Action::ClearCell,
+            KeyCode::Char('p') => Action::TogglePause,
             KeyCode::Char('t') => Action::Hint,
             KeyCode::Char('u') => Action::Undo,
-            KeyCode::Char('x') => Action::ClearCell,
             KeyCode::Char('h') | KeyCode::Left => Action::MoveCursor(-1, 0),
             KeyCode::Char('l') | KeyCode::Right => Action::MoveCursor(1, 0),
             KeyCode::Char('k') | KeyCode::Up => Action::MoveCursor(0, -1),
@@ -316,6 +321,8 @@ impl GameWidget {
 
 impl GameWidget {
     const TEXT_COLOR: Color = SLATE.c400;
+    const WON_COLOR: Color = EMERALD.c300;
+    const PAUSE_COLOR: Color = AMBER.c300;
 
     fn controls(&self) -> impl Widget {
         let keys = [
@@ -328,7 +335,7 @@ impl GameWidget {
             ("c", "Check"),
             ("^C", "Solve"),
             ("^N", "New game"),
-            ("^B", "Clear board"),
+            ("^X", "Clear board"),
             ("^S", "Save game"),
             ("?", "Show/hide controls"),
             ("^Q", "Quit"),
@@ -352,13 +359,25 @@ impl GameWidget {
     }
 
     fn pause_popup(&self) -> impl Widget {
-        let text = vec![Line::from("press 'P' to resume").fg(Self::TEXT_COLOR)];
+        let text = vec![Line::from("press 'P' to resume").fg(Self::PAUSE_COLOR)];
         Paragraph::new(text)
             .block(
                 Block::default()
                     .borders(Borders::ALL)
                     .title("Paused")
-                    .fg(Self::TEXT_COLOR)
+                    .fg(Self::PAUSE_COLOR)
+                    .title_alignment(Alignment::Center),
+            )
+            .centered()
+    }
+
+    fn won_popup(&self) -> impl Widget {
+        let text = vec![Line::from("🎉 You won! 🎉").fg(Self::WON_COLOR)];
+        Paragraph::new(text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .fg(Self::WON_COLOR)
                     .title_alignment(Alignment::Center),
             )
             .centered()
@@ -424,12 +443,9 @@ impl GameWidget {
         let fg_color = match cell {
             Cell { value: 0, .. } => Color::DarkGray,
             Cell { value, .. } if highlight_value(value) => Color::LightYellow,
-            Cell { locked: true, .. } => Color::White,
-            Cell {
-                checked: Some(correct),
-                ..
-            } => {
-                if correct {
+            Cell { .. } if !cell.writable() => Color::White,
+            Cell { .. } if cell.checked() => {
+                if cell.correct() {
                     Color::Green
                 } else {
                     Color::Red
@@ -512,7 +528,7 @@ impl Widget for &MenuWidget {
             .enumerate()
             .map(|(i, (option, _))| {
                 let style = if i == self.selected {
-                    Style::default().fg(SLATE.c400).bg(SLATE.c800)
+                    Style::default().reversed()
                 } else {
                     Style::default().fg(SLATE.c400)
                 };
@@ -546,6 +562,7 @@ impl MenuWidget {
 
     fn handle_key_event(&mut self, event: KeyEvent) -> Option<Action> {
         match event.code {
+            KeyCode::Esc => return Some(Action::Quit),
             KeyCode::Char('j') | KeyCode::Down => {
                 self.selected = (self.selected + 1) % self.options.len();
             }
@@ -553,8 +570,8 @@ impl MenuWidget {
                 self.selected = self.selected.saturating_sub(1) % self.options.len();
             }
             KeyCode::Enter => {
-                let (_, msg) = &self.options[self.selected];
-                return Some(*msg);
+                let &(_, msg) = &self.options[self.selected];
+                return Some(msg);
             }
             _ => {}
         }
