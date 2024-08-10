@@ -29,6 +29,7 @@ pub enum Screen {
     Game,
 }
 
+#[derive(Default)]
 pub struct GameWidget {
     game: Sudoku,
     cursor: (usize, usize),
@@ -54,102 +55,22 @@ enum Action {
     Quit,
 }
 
-impl Widget for &GameWidget {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let [main, controls] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Max(13), Constraint::Length(3)])
-            .flex(layout::Flex::Center)
-            .areas(area);
-
-        let [sidebar, game] = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(16), Constraint::Length(42)])
-            .flex(layout::Flex::Center)
-            .areas(main);
-        self.board().render(game, buf);
-
-        let [timer, diff, hints, checks] = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints(Constraint::from_lengths([3, 3, 3, 3]))
-            .areas(sidebar);
-        self.timer().render(timer, buf);
-        self.difficulty().render(diff, buf);
-        self.hints().render(hints, buf);
-        self.checks().render(checks, buf);
-
-        if self.show_controls {
-            let [controls] = Layout::default()
-                .direction(Direction::Horizontal)
-                .flex(layout::Flex::Center)
-                .constraints([Constraint::Fill(1)])
-                .areas(controls);
-
-            self.controls().render(controls, buf);
-        }
-
-        match self.game.state() {
-            GameState::Paused => {
-                let area = centered_rect(90, 30, game);
-                Clear.render(area, buf);
-                self.pause_popup().render(area, buf);
-            }
-            GameState::Won => {
-                let area = centered_rect(90, 30, game);
-                Clear.render(area, buf);
-                self.won_popup().render(area, buf);
-            }
-            _ => {}
-        }
-    }
-}
-
-impl Default for GameWidget {
-    fn default() -> Self {
-        Self {
-            game: Sudoku::generate(Difficulty::Hard),
-            cursor: (0, 0),
-            show_controls: true,
-        }
-    }
-}
-
-impl Widget for &App {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        match self.current_screen {
-            Screen::MainMenu => self.main_menu.render(area, buf),
-            Screen::Game => self.game.render(area, buf),
-            Screen::NewGameMenu => self.new_game_menu.render(area, buf),
-        }
-    }
-}
-
 impl App {
-    pub fn new() -> Self {
-        let options = vec![
+    pub fn run(&mut self, mut term: Terminal<impl Backend>) -> Result<()> {
+        self.main_menu = MenuWidget::new([
             ("New Game", Action::NewGame(Difficulty::default())),
             ("Load Game", Action::LoadGame),
             ("Quit", Action::Quit),
-        ];
-        let main_menu = MenuWidget::new(options);
+        ]);
 
-        let options = vec![
+        self.new_game_menu = MenuWidget::new([
             ("Easy", Action::NewGame(Difficulty::Easy)),
             ("Medium", Action::NewGame(Difficulty::Medium)),
             ("Hard", Action::NewGame(Difficulty::Hard)),
             ("Expert", Action::NewGame(Difficulty::Expert)),
             ("< Back", Action::Quit),
-        ];
-        let new_game_menu = MenuWidget::new(options);
+        ]);
 
-        Self {
-            main_menu,
-            new_game_menu,
-            ..Default::default()
-        }
-    }
-
-    pub fn run(&mut self, mut term: Terminal<impl Backend>) -> Result<()> {
         while self.is_running() {
             self.draw(&mut term)?;
             let mut current_message = self.handle_events()?;
@@ -166,7 +87,11 @@ impl App {
     }
 
     fn draw(&self, term: &mut Terminal<impl Backend>) -> Result<()> {
-        term.draw(|f| f.render_widget(self, f.size()))?;
+        term.draw(|f| match self.current_screen {
+            Screen::MainMenu => f.render_widget(&self.main_menu, f.size()),
+            Screen::NewGameMenu => f.render_widget(&self.new_game_menu, f.size()),
+            Screen::Game => f.render_widget(&self.game, f.size()),
+        })?;
         Ok(())
     }
 
@@ -219,6 +144,53 @@ impl App {
             };
         }
         Ok(None)
+    }
+}
+
+impl Widget for &GameWidget {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let [main, controls] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Max(13), Constraint::Length(3)])
+            .flex(layout::Flex::Center)
+            .areas(area);
+
+        let [sidebar, game] = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Length(16), Constraint::Length(42)])
+            .flex(layout::Flex::Center)
+            .areas(main);
+        self.board().render(game, buf);
+
+        let [timer, diff, hints, checks] = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints(Constraint::from_lengths([3, 3, 3, 3]))
+            .areas(sidebar);
+        self.timer().render(timer, buf);
+        self.difficulty().render(diff, buf);
+        self.hints().render(hints, buf);
+        self.checks().render(checks, buf);
+
+        let [controls] = Layout::default()
+            .direction(Direction::Horizontal)
+            .flex(layout::Flex::Center)
+            .constraints([Constraint::Fill(1)])
+            .areas(controls);
+        self.controls().render(controls, buf);
+
+        match self.game.state() {
+            GameState::Paused => {
+                let area = centered_rect(90, 30, game);
+                Clear.render(area, buf);
+                self.pause_popup().render(area, buf);
+            }
+            GameState::Won => {
+                let area = centered_rect(90, 30, game);
+                Clear.render(area, buf);
+                self.won_popup().render(area, buf);
+            }
+            _ => {}
+        }
     }
 }
 
@@ -352,6 +324,12 @@ impl GameWidget {
                 [key, desc]
             })
             .collect();
+
+        if !self.show_controls {
+            return Paragraph::new("press '?' for controls")
+                .fg(Self::TEXT_COLOR)
+                .centered();
+        }
 
         Paragraph::new(line)
             .wrap(Wrap { trim: true })
@@ -550,9 +528,10 @@ impl Widget for &MenuWidget {
 }
 
 impl MenuWidget {
-    fn new<T>(options: Vec<(T, Action)>) -> Self
+    fn new<T, U>(options: T) -> Self
     where
-        T: Into<String>,
+        T: IntoIterator<Item = (U, Action)>,
+        U: Into<String>,
     {
         Self {
             options: options.into_iter().map(|(s, m)| (s.into(), m)).collect(),

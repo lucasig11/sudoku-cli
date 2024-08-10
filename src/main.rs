@@ -8,7 +8,7 @@ mod sudoku;
 fn main() -> Result<()> {
     tui::init_panic_hook()?;
     let terminal = tui::init_terminal()?;
-    App::new().run(terminal)?;
+    App::default().run(terminal)?;
     tui::restore_terminal()?;
     Ok(())
 }

@@ -12,7 +12,7 @@ pub const MAX_HINTS: u8 = 3;
 #[derive(Default)]
 pub struct Sudoku {
     grid: [[Cell; SIZE]; SIZE],
-    solution: [[Cell; SIZE]; SIZE],
+    solution: [[u8; SIZE]; SIZE],
     state: GameState,
     movements: Vec<Move>,
     start: Option<Instant>,
@@ -25,7 +25,7 @@ pub struct Sudoku {
 #[derive(Serialize, Deserialize)]
 struct Save {
     grid: [[Cell; SIZE]; SIZE],
-    solution: [[Cell; SIZE]; SIZE],
+    solution: [[u8; SIZE]; SIZE],
     difficulty: Difficulty,
     elapsed: u64,
     checks: u8,
@@ -80,7 +80,7 @@ impl Cell {
     }
 
     pub fn correct(&self) -> bool {
-        self.checked() && self.flags & CELL_CORRECT != 0
+        self.flags & CELL_CORRECT != 0
     }
 }
 
@@ -132,14 +132,19 @@ impl Sudoku {
             difficulty,
             start: Some(Instant::now()),
             grid: puzzle.grid.map(|row| row.map(Cell::new)),
-            solution: solution.grid.map(|row| row.map(Cell::new)),
+            solution: solution.grid,
             ..Default::default()
         }
     }
 
     pub fn load(bytes: &[u8]) -> Result<Self> {
-        let save: Save = bincode::deserialize(bytes)?;
-        Ok(Self {
+        bincode::deserialize(bytes)
+            .map(Self::from_save)
+            .map_err(Into::into)
+    }
+
+    fn from_save(save: Save) -> Self {
+        Self {
             hints: save.hints,
             checks: save.checks,
             difficulty: save.difficulty,
@@ -148,7 +153,7 @@ impl Sudoku {
             grid: save.grid,
             solution: save.solution,
             ..Default::default()
-        })
+        }
     }
 
     pub fn save(&self) -> Result<Vec<u8>> {
@@ -194,7 +199,6 @@ impl Sudoku {
     pub fn elapsed(&self) -> Duration {
         match self.state {
             GameState::Running => self.elapsed + self.start.unwrap().elapsed(),
-            GameState::Paused => self.elapsed,
             _ => self.elapsed,
         }
     }
@@ -215,27 +219,26 @@ impl Sudoku {
         self.is_running() && self.hints < MAX_HINTS
     }
 
-    fn solve(&mut self) {
-        self.elapsed = self.elapsed();
-        self.state = GameState::Solved;
-    }
-
     pub fn complete(&mut self) {
         if !self.is_running() {
             return;
         }
-        self.solve();
+
         for y in 0..SIZE {
             for x in 0..SIZE {
-                if self.writable(x, y) {
-                    let cell = &mut self.grid[y][x];
-                    let solution = self.solution[y][x].value;
-                    let is_correct = cell.value == 0 || cell.value == solution;
-                    self.grid[y][x].value = solution;
-                    self.grid[y][x].check(is_correct);
+                if !self.writable(x, y) {
+                    continue;
                 }
+                let cell = &mut self.grid[y][x];
+                let solution = self.solution[y][x];
+                let is_correct = cell.value == 0 || cell.value == solution;
+                self.grid[y][x].value = solution;
+                self.grid[y][x].check(is_correct);
             }
         }
+
+        self.elapsed = self.elapsed();
+        self.state = GameState::Solved;
     }
 
     pub fn check(&mut self) {
@@ -251,7 +254,7 @@ impl Sudoku {
                     continue;
                 }
 
-                cell.check(cell.value == self.solution[i][j].value);
+                cell.check(cell.value == self.solution[i][j]);
                 checked = true;
             }
         }
@@ -278,7 +281,7 @@ impl Sudoku {
                 continue;
             }
 
-            cell.value = self.solution[y][x].value;
+            cell.value = self.solution[y][x];
             cell.check(true);
             self.hints += 1;
             break;
@@ -346,7 +349,7 @@ impl Sudoku {
         self.grid.iter().enumerate().all(|(y, row)| {
             row.iter()
                 .enumerate()
-                .all(|(x, cell)| cell.value == self.solution[y][x].value)
+                .all(|(x, cell)| cell.value == self.solution[y][x])
         })
     }
 }
